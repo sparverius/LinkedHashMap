@@ -2,6 +2,7 @@ namespace LHMap {
 
     export class LinkedHashMap<V> implements Map<string, V> {
 
+        private capacity: number;
         private threshold: number;
         private loadFactor: number;
         private modCount: number = 0;
@@ -10,18 +11,41 @@ namespace LHMap {
         public buckets: Array<Entry<V>>;
         public header: Entry<V>;
 
-        constructor(initialCapacity = 11, loadFactor = 0.75) {
+        constructor(
+            entries?: readonly (readonly [string, V])[] | null,
+            initialCapacity = 11,
+            loadFactor = 0.75
+        ) {
             this.threshold = Math.floor(initialCapacity * loadFactor);
             this.loadFactor = loadFactor;
-
-            this.buckets = new Array(initialCapacity);
+            this.capacity = initialCapacity;
 
             this.header = new Entry(undefined, undefined, undefined);
             this.header.before = this.header;
-            this.header.after = this.header
+            this.header.after = this.header;
+
+            if (entries) {
+                this.capacity = this.computeCapacity(initialCapacity, entries.length);
+                this.threshold = Math.floor(this.capacity * this.loadFactor);
+                this.buckets = new Array(this.capacity);
+                this.putAll(entries);
+            }
+            else {
+                this.buckets = new Array(this.capacity);
+            }
+
         }
 
-        isEmpty(): boolean { return this.size === 0; }
+        private computeCapacity(initialCapacity: number, length: number): number {
+            let newCapacity = initialCapacity;
+            while (length > this.threshold)
+                newCapacity = (newCapacity * 2) + 1;
+            return newCapacity;
+        }
+
+        isEmpty(): boolean {
+            return this.size === 0;
+        }
 
         hashCode(str: string): number {
             let hash = 0;
@@ -57,21 +81,24 @@ namespace LHMap {
             return false;
         }
 
-        rehash(): void {
+        private rehash(): void {
             let newCapacity = (this.buckets.length * 2) + 1;
             this.threshold = Math.floor(newCapacity * this.loadFactor);
-            let newBuckets = new Array(newCapacity);
 
-            for (let e = this.header.after; e != this.header; e = e.after) {
-                let idx = this.hash(e.key);
-                e.next = newBuckets[idx];
-                newBuckets[idx] = e;
+            // make sure GC does not kick in
+            let oldBuckets = this.buckets;
+            this.buckets = new Array(newCapacity);
+
+            let entry = this.header.after;
+            while (this.header !== entry) {
+                let idx = this.hash(entry.key);
+                entry.next = this.buckets[idx];
+                this.buckets[idx] = entry;
+                entry = entry.after;
             }
-
-            this.buckets = newBuckets;
         }
 
-        addEntry(key: string, value: V, idx: number, callRemove: boolean): void {
+        private addEntry(key: string, value: V, idx: number, callRemove: boolean): void {
             let old = this.buckets[idx];
             let entry = new Entry(key, value, old);
             this.buckets[idx] = entry;
@@ -87,10 +114,10 @@ namespace LHMap {
 
             while (entry !== undefined) {
                 if (key === entry.key) {
-                    let res = entry.value;
                     entry.value = value;
                     entry.remove();
                     entry.addBefore(this.header);
+
                     return this;
                 } else {
                     entry = entry.next;
@@ -102,23 +129,24 @@ namespace LHMap {
 
             if (this.size > this.threshold) {
                 this.rehash();
-                idx = this.hash(key);
+                // idx = this.hash(key);
+                this.addEntry(key, value, this.hash(key), true);
+            } else {
+                this.addEntry(key, value, idx, true);
             }
 
-            this.addEntry(key, value, idx, true);
 
             return this;
         }
 
-        putAll(inputMap: Array<[string, V]>): void {
-            if (inputMap === undefined) { return; }
-            for (const entry of inputMap) {
-                let [key, value] = entry;
-                this.set(key, value);
-            }
+        putAll(entries: readonly (readonly [string, V])[] | null) {
+            if (entries)
+                for (const entry of entries)
+                    this.set(entry[0], entry[1]);
         }
 
         delete(key: string): boolean {
+
             let idx = this.hash(key);
             let entry: Entry<V> = this.buckets[idx];
             let last = undefined;
@@ -127,14 +155,14 @@ namespace LHMap {
                 if (key === entry.key) {
                     this.modCount += 1;
 
-                    if (last === undefined) {
+                    if (last === undefined)
                         this.buckets[idx] = entry.next;
-                    } else {
+                    else
                         last.next = entry.next;
-                    }
+
                     this.size -= 1;
+                    entry.remove()
                     return true;
-                    // return entry.cleanUp();
                 }
                 last = entry;
                 entry = entry.next;
@@ -150,20 +178,11 @@ namespace LHMap {
             }
         }
 
-        forEach(callbackfn: (value: V, key: string, map: Map<string, V>) => void, thisArg?: any): void {
-            let iter = this._iterator();
-            var nxt = iter.next();
-            while (!nxt.done) {
-                callbackfn(nxt.value[1], nxt.value[0], this);
-                nxt = iter.next();
-            }
-        }
-
         get [Symbol.toStringTag](): string {
             return "LinkedHashMap";
         }
 
-        * values(): IterableIterator<V> {
+        *values(): IterableIterator<V> {
             let tmp = this.header;
             let nextEntry = tmp.after;
 
@@ -173,7 +192,8 @@ namespace LHMap {
             }
         }
 
-        * keys(): IterableIterator<string> {
+
+        *keys(): IterableIterator<string> {
             let tmp = this.header;
             let nextEntry = tmp.after;
 
@@ -202,28 +222,47 @@ namespace LHMap {
         }
 
         containsValue(value: V): boolean {
-            for (const entry of this) {
-                if (entry[1] === value) return true;
-            }
+            for (const entry of this)
+                if (entry[1] === value)
+                    return true;
             return false;
         }
 
-        map<R>(callbackfn: (value: V, key: string, map: Map<string, V>) => R): Array<R> {
-            const resultArray: R[] = [];
+        forEach(callbackfn: (value: V, key: string, map: Map<string, V>) => void, thisArg?: any): void {
+            let iter = this._iterator();
+            var nxt = iter.next();
+            while (!nxt.done) {
+                callbackfn(nxt.value[1], nxt.value[0], this);
+                nxt = iter.next();
+            }
+        }
+
+        mapTo<R>(callbackfn: (value: V, key: string, map: Map<string, V>) => R): Map<string, R> {
+            const resultMap: LinkedHashMap<R> = new LinkedHashMap<R>(null, this.capacity);
 
             for (const entry of this) {
-                let res = callbackfn(entry[1], entry[0], this);
-                resultArray.push(res);
+                let res: R = callbackfn(entry[1], entry[0], this);
+                resultMap.set(entry[0], res)
             }
 
+            return resultMap;
+        }
+
+        map<R>(callbackfn: (value: V, key: string) => R): Array<R> {
+            const resultArray: R[] = Array<R>(this.size)
+            let i = 0;
+            for (const entry of this) {
+                resultArray[i] = callbackfn(entry[1], entry[0]);
+                i += 1;
+            }
             return resultArray;
         }
 
-        foldl(ini, callback) {
+        foldl<R>(ini: R, callbackfn: (ini: R, kv: [string, V], map: Map<string, V>) => R): R {
             let result = ini;
-            for (const entry of this) {
-                result = callback(result, [entry[1], entry[0]]);
-            }
+            for (const entry of this)
+                result = callbackfn(result, entry, this);
+
             return result;
         }
     }
@@ -257,8 +296,5 @@ namespace LHMap {
             this.after.before = this;
         }
 
-        cleanUp() {
-            return this.value;
-        }
     }
 }
